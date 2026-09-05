@@ -1,0 +1,106 @@
+name: RSTA-013 RNCP Conformance Suite
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - protocol/rncp-commitment-protocol-v1.json
+      - conformance/**
+      - .github/workflows/rsta-013-conformance.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cross-language valid-case conformance
+        shell: bash
+        run: |
+          set -euo pipefail
+          PY=$(python3 conformance/rncp_conformance.py conformance/fixtures/valid-commitment.json)
+          JS=$(node conformance/rncp_conformance.mjs conformance/fixtures/valid-commitment.json)
+          python3 - <<'PY' "$PY" "$JS"
+          import json, sys
+          py=json.loads(sys.argv[1]); js=json.loads(sys.argv[2])
+          assert py == js, json.dumps({'python':py,'javascript':js}, indent=2)
+          assert py['decision']=='PASS'
+          assert py['protocol']=='RNCP-COMMITMENT-V1'
+          assert py['single_use'] is True
+          print(json.dumps({'decision':'PASS','cross_language':'MATCH','result':py}, indent=2))
+          PY
+
+      - name: Negative tamper-case conformance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('conformance/fixtures/valid-commitment.json')
+          x=json.loads(p.read_text())
+          x['commitment']['payload'] += '|tampered=true'
+          Path('/tmp/tampered.json').write_text(json.dumps(x, indent=2))
+          PY
+          set +e
+          python3 conformance/rncp_conformance.py /tmp/tampered.json > /tmp/py-tamper.txt
+          PY_RC=$?
+          node conformance/rncp_conformance.mjs /tmp/tampered.json > /tmp/js-tamper.txt
+          JS_RC=$?
+          set -e
+          test "$PY_RC" -ne 0
+          test "$JS_RC" -ne 0
+          grep -q 'PAYLOAD_HASH_MISMATCH' /tmp/py-tamper.txt
+          grep -q 'PAYLOAD_HASH_MISMATCH' /tmp/js-tamper.txt
+          echo '{"decision":"PASS","tamper":"BOTH_IMPLEMENTATIONS_REJECT"}'
+
+      - name: Negative replay-policy conformance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          x=json.loads(Path('conformance/fixtures/valid-commitment.json').read_text())
+          x['replay_policy']='ALLOW_REPLAY'
+          Path('/tmp/replay-policy-invalid.json').write_text(json.dumps(x, indent=2))
+          PY
+          set +e
+          python3 conformance/rncp_conformance.py /tmp/replay-policy-invalid.json > /tmp/py-replay.txt
+          PY_RC=$?
+          node conformance/rncp_conformance.mjs /tmp/replay-policy-invalid.json > /tmp/js-replay.txt
+          JS_RC=$?
+          set -e
+          test "$PY_RC" -ne 0
+          test "$JS_RC" -ne 0
+          grep -q 'REPLAY_POLICY_INVALID' /tmp/py-replay.txt
+          grep -q 'REPLAY_POLICY_INVALID' /tmp/js-replay.txt
+          echo '{"decision":"PASS","replay_policy":"BOTH_IMPLEMENTATIONS_REJECT"}'
+
+      - name: Publish conformance evidence
+        shell: bash
+        run: |
+          cat > /tmp/rsta-013-conformance-evidence.json <<EOF
+          {
+            "schema":"rncp-rsta-013-conformance-v1",
+            "decision":"PASS",
+            "protocol":"RNCP-COMMITMENT-V1",
+            "implementations":["python-reference","javascript-independent"],
+            "valid_case":"PASS",
+            "tamper_case":"REJECT",
+            "replay_policy_case":"REJECT",
+            "cross_implementation_equivalence":true,
+            "provider_neutral_fixture":"conformance/fixtures/valid-commitment.json"
+          }
+          EOF
+          cat /tmp/rsta-013-conformance-evidence.json
+
+      - name: Upload conformance evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: rsta-013-conformance-evidence
+          path: /tmp/rsta-013-conformance-evidence.json
