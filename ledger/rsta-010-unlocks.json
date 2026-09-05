@@ -1,0 +1,11 @@
+{
+  "schema": "rncp-rsta-010-unlock-ledger-v1",
+  "RSTA-009-33959360420": {
+    "state": "UNLOCKED",
+    "event_id": "RSTA-009-33959360420",
+    "source_run_id": "33959360420",
+    "ledger_commit_sha": "b861cd1e69d22a87c2013e64a2e2b3f8374ce0f3",
+    "payload_sha256": "16491e09ee376b12290b888ad460801490da4acb50b3a52a542d4b576279022f",
+    "downstream_action": "RSTA-010-DEMO-ACTION"
+  }
+}
