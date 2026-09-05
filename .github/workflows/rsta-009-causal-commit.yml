@@ -35,32 +35,15 @@ jobs:
             const raw = Buffer.from(current.data.content, 'base64').toString('utf8');
             const ledger = JSON.parse(raw);
             if (ledger[eventId]) core.setFailed(`event already exists: ${eventId}`);
-            ledger[eventId] = {
-              state: 'CONSUMED',
-              payload: payload,
-              payload_sha256: payloadSha256,
-              source: 'GITHUB_ACTIONS_PUBLIC',
-              first_verifier: 'GITHUB_ACTIONS_PUBLIC',
-              source_run_id: String(context.runId),
-              source_commit_sha: context.sha
-            };
-            const content = Buffer.from(JSON.stringify(ledger, null, 2) + '\n').toString('base64');
-            const updated = await github.rest.repos.createOrUpdateFileContents({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              path,
-              message: `RSTA-009: persist causal commitment from run ${context.runId}`,
-              content,
-              sha: current.data.sha,
-              branch
-            });
-            core.setOutput('event_id', eventId);
-            core.setOutput('payload_sha256', payloadSha256);
-            core.setOutput('ledger_commit_sha', updated.data.commit.sha);
-            core.setOutput('payload', payload);
-            console.log(JSON.stringify({event_id:eventId, payload_sha256:payloadSha256, source_run_id:String(context.runId), ledger_commit_sha:updated.data.commit.sha}, null, 2));
+            ledger[eventId] = {state:'CONSUMED',payload,payload_sha256:payloadSha256,source:'GITHUB_ACTIONS_PUBLIC',first_verifier:'GITHUB_ACTIONS_PUBLIC',source_run_id:String(context.runId),source_commit_sha:context.sha};
+            const content = Buffer.from(JSON.stringify(ledger,null,2)+'\n').toString('base64');
+            const updated = await github.rest.repos.createOrUpdateFileContents({owner:context.repo.owner,repo:context.repo.repo,path,message:`RSTA-009: persist causal commitment from run ${context.runId}`,content,sha:current.data.sha,branch});
+            core.setOutput('event_id',eventId);
+            core.setOutput('payload_sha256',payloadSha256);
+            core.setOutput('ledger_commit_sha',updated.data.commit.sha);
+            console.log(JSON.stringify({event_id:eventId,payload_sha256:payloadSha256,source_run_id:String(context.runId),ledger_commit_sha:updated.data.commit.sha},null,2));
 
-      - name: Dispatch independent second executor from this run
+      - name: Dispatch independent replay verifier
         uses: actions/github-script@v7
         env:
           EVENT_ID: ${{ steps.persist.outputs.event_id }}
@@ -70,20 +53,18 @@ jobs:
         with:
           github-token: ${{ github.token }}
           script: |
-            await github.rest.actions.createWorkflowDispatch({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'rsta-009-causal-replay.yml',
-              ref: 'main',
-              inputs: {
-                event_id: process.env.EVENT_ID,
-                source_run_id: process.env.SOURCE_RUN_ID,
-                ledger_commit_sha: process.env.LEDGER_COMMIT_SHA,
-                token_id: 'NONE',
-                request_id: 'NONE',
-                expected_sha256: process.env.PAYLOAD_SHA256,
-                branch: 'main'
-              }
-            });
-            console.log('workflow_dispatch accepted');
-            // Deterministic zero-cost causal chain: commit state, then explicitly dispatch verifier.
+            await github.rest.actions.createWorkflowDispatch({owner:context.repo.owner,repo:context.repo.repo,workflow_id:'rsta-009-causal-replay.yml',ref:'main',inputs:{event_id:process.env.EVENT_ID,source_run_id:process.env.SOURCE_RUN_ID,ledger_commit_sha:process.env.LEDGER_COMMIT_SHA,token_id:'NONE',request_id:'NONE',expected_sha256:process.env.PAYLOAD_SHA256,branch:'main'}});
+            console.log('workflow_dispatch accepted for RSTA-009 replay verifier');
+
+      - name: Dispatch capability unlock verifier
+        uses: actions/github-script@v7
+        env:
+          EVENT_ID: ${{ steps.persist.outputs.event_id }}
+          SOURCE_RUN_ID: ${{ github.run_id }}
+          LEDGER_COMMIT_SHA: ${{ steps.persist.outputs.ledger_commit_sha }}
+          PAYLOAD_SHA256: ${{ steps.persist.outputs.payload_sha256 }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({owner:context.repo.owner,repo:context.repo.repo,workflow_id:'rsta-010-capability-unlock.yml',ref:'main',inputs:{event_id:process.env.EVENT_ID,source_run_id:process.env.SOURCE_RUN_ID,ledger_commit_sha:process.env.LEDGER_COMMIT_SHA,expected_sha256:process.env.PAYLOAD_SHA256,branch:'main'}});
+            console.log('workflow_dispatch accepted for RSTA-010 capability unlock');
