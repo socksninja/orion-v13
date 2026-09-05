@@ -1,0 +1,90 @@
+name: RSTA-009 Causal Replay
+
+on:
+  workflow_dispatch:
+    inputs:
+      event_id:
+        description: Commitment event ID
+        required: true
+        type: string
+      source_run_id:
+        description: First verifier workflow run ID
+        required: true
+        type: string
+      ledger_commit_sha:
+        description: Commit produced by the first verifier when it persisted CONSUMED
+        required: true
+        type: string
+      expected_sha256:
+        description: Expected payload SHA-256
+        required: true
+        type: string
+      branch:
+        description: Branch containing the causal ledger commit
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  causal-replay:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact causal ledger commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ledger_commit_sha }}
+          fetch-depth: 1
+
+      - name: Independently verify durable causal commitment
+        shell: bash
+        env:
+          EVENT_ID: ${{ inputs.event_id }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          LEDGER_COMMIT_SHA: ${{ inputs.ledger_commit_sha }}
+          EXPECTED_SHA256: ${{ inputs.expected_sha256 }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, subprocess
+          event = os.environ['EVENT_ID']
+          source = os.environ['SOURCE_RUN_ID']
+          commit = os.environ['LEDGER_COMMIT_SHA']
+          expected = os.environ['EXPECTED_SHA256']
+
+          with open('ledger/rsta-008-consumed.json', encoding='utf-8') as f:
+              ledger = json.load(f)
+          entry = ledger.get(event)
+          assert entry is not None, f'missing event: {event}'
+          assert entry.get('state') == 'CONSUMED', entry
+          assert entry.get('payload_sha256') == expected, entry
+          assert entry.get('source_run_id') == source, entry
+
+          head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          assert head == commit, (head, commit)
+
+          decision = 'REJECT'
+          reason = 'DURABLE_EVENT_ALREADY_CONSUMED'
+          evidence = {
+              'schema': 'rncp-rsta-009-v1',
+              'event_id': event,
+              'source_run_id': source,
+              'ledger_commit_sha': commit,
+              'ledger_state': entry['state'],
+              'payload_sha256': entry['payload_sha256'],
+              'decision': decision,
+              'reason': reason,
+              'causal_chain': 'FIRST_RUN_VERIFY -> LEDGER_COMMIT -> WORKFLOW_DISPATCH -> SECOND_RUN_REJECT'
+          }
+          print(json.dumps(evidence, sort_keys=True))
+          with open('/tmp/rsta-009-causal-replay.json', 'w', encoding='utf-8') as f:
+              json.dump(evidence, f, indent=2, sort_keys=True)
+          PY
+
+      - name: Publish causal replay evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: rsta-009-causal-replay
+          path: /tmp/rsta-009-causal-replay.json
+          if-no-files-found: error
