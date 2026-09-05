@@ -22,12 +22,13 @@ on:
   push:
     paths:
       - .github/workflows/rsta-006-independent-verify.yml
+  pull_request:
+    paths:
+      - .github/workflows/rsta-006-independent-verify.yml
 
 jobs:
   verify:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - name: Checkout verifier
         uses: actions/checkout@v4
@@ -41,7 +42,7 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-          import hashlib, json, os, urllib.request, sys
+          import hashlib, json, os, urllib.request
           token=os.environ['TOKEN_ID']
           reqid=os.environ['REQUEST_UUID']
           expected=os.environ['EXPECTED_SHA256']
@@ -60,15 +61,3 @@ jobs:
           assert actual==expected
           assert event in values
           open('rsta-006-result.json','w').write(json.dumps({'schema':'rncp-rsta-006-result-v1','valid':True,'executor':'VERCEL','external_system':'WEBHOOK_SITE','verifier':'GITHUB_ACTIONS_PUBLIC','token_id':token,'request_uuid':reqid,'method':'POST','payload_sha256':actual,'event_id':event},indent=2)+'\n')
-          PY
-
-      - name: Commit independent verification evidence
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          git config user.name 'rncp-verifier-bot'
-          git config user.email 'rncp-verifier-bot@users.noreply.github.com'
-          git add rsta-006-result.json
-          git commit -m '[RSTA-006] commit cross-provider independent verification' || exit 0
-          git push
