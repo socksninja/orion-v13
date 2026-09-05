@@ -1,0 +1,128 @@
+name: RSTA-014 Portable Commitment Capability E2E
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'conformance/fixtures/rsta-014-portable-envelope.json'
+      - 'conformance/rsta_014_executor.py'
+      - 'conformance/rsta_014_executor.mjs'
+      - '.github/workflows/rsta-014-portable-e2e.yml'
+  workflow_dispatch:
+
+jobs:
+  execute-and-record:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python portable execution
+        run: |
+          python3 conformance/rsta_014_executor.py \
+            conformance/fixtures/rsta-014-portable-envelope.json \
+            /tmp/rsta-014-ledger-python.json | tee /tmp/python-result.json
+      - name: JavaScript independent portable execution
+        run: |
+          node conformance/rsta_014_executor.mjs \
+            conformance/fixtures/rsta-014-portable-envelope.json \
+            /tmp/rsta-014-ledger-js.json | tee /tmp/js-result.json
+          python3 - <<'PY'
+          import json
+          p=json.load(open('/tmp/python-result.json'))
+          j=json.load(open('/tmp/js-result.json'))
+          assert p == j, (p, j)
+          assert p['decision'] == 'EXECUTED'
+          assert p['transition'] == 'VALID->UNLOCKED->EXECUTED->REALITY_RECORDED'
+          assert p['capability'] == 'RSTA-014-PORTABLE-ACTION'
+          assert p['receipt_sha256'] == json.load(open('/tmp/rsta-014-ledger-python.json'))['RSTA-014-E2E-001']['receipt']['payload_sha256']
+          assert json.load(open('/tmp/rsta-014-ledger-python.json')) == json.load(open('/tmp/rsta-014-ledger-js.json'))
+          print('CROSS_IMPLEMENTATION_EXECUTION_EQUIVALENCE=PASS')
+          PY
+      - name: Build portable reality receipt
+        run: |
+          python3 - <<'PY'
+          import json, hashlib
+          result=json.load(open('/tmp/python-result.json'))
+          ledger=json.load(open('/tmp/rsta-014-ledger-python.json'))
+          event=ledger['RSTA-014-E2E-001']
+          receipt=event['receipt']
+          assert receipt['state']=='REALITY_RECORDED'
+          assert hashlib.sha256(receipt['payload'].encode()).hexdigest()==receipt['payload_sha256']
+          evidence={
+            'schema':'rncp-rsta-014-portable-e2e-v1',
+            'decision':'PASS',
+            'event_id':result['event_id'],
+            'capability':result['capability'],
+            'transition':result['transition'],
+            'receipt_state':receipt['state'],
+            'receipt_payload_sha256':receipt['payload_sha256'],
+            'cross_implementation_equivalence':True,
+            'durable_replay_guard':'PENDING_SECOND_JOB'
+          }
+          json.dump(evidence,open('/tmp/rsta-014-evidence.json','w'),indent=2,sort_keys=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rsta-014-ledger
+          path: /tmp/rsta-014-ledger-python.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rsta-014-evidence
+          path: /tmp/rsta-014-evidence.json
+
+  replay-must-reject:
+    needs: execute-and-record
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: rsta-014-ledger
+          path: /tmp
+      - name: Replay portable commitment and require durable rejection
+        run: |
+          set +e
+          python3 conformance/rsta_014_executor.py \
+            conformance/fixtures/rsta-014-portable-envelope.json \
+            /tmp/rsta-014-replay-ledger.json > /tmp/replay-result.json
+          code=$?
+          set -e
+          # The downloaded ledger is the prior execution state. Seed the exact
+          # state under the expected filename for the verifier's durable replay check.
+          cp /tmp/rsta-014-ledger-python.json /tmp/rsta-014-replay-ledger.json
+          set +e
+          python3 conformance/rsta_014_executor.py \
+            conformance/fixtures/rsta-014-portable-envelope.json \
+            /tmp/rsta-014-replay-ledger.json > /tmp/replay-result.json
+          code=$?
+          set -e
+          cat /tmp/replay-result.json
+          test "$code" -ne 0
+          python3 - <<'PY'
+          import json
+          r=json.load(open('/tmp/replay-result.json'))
+          assert r['decision']=='REJECT'
+          assert r['reason']=='DURABLE_EVENT_ALREADY_CONSUMED'
+          print('DURABLE_REPLAY_GUARD=PASS')
+          PY
+      - name: Tamper portable commitment and require rejection
+        run: |
+          python3 - <<'PY'
+          import json
+          p='conformance/fixtures/rsta-014-portable-envelope.json'
+          obj=json.load(open(p))
+          obj['commitment']['payload'] += '|tampered'
+          json.dump(obj,open('/tmp/rsta-014-tampered.json','w'),indent=2)
+          PY
+          set +e
+          python3 conformance/rsta_014_executor.py /tmp/rsta-014-tampered.json /tmp/rsta-014-tamper-ledger.json > /tmp/tamper-result.json
+          code=$?
+          set -e
+          cat /tmp/tamper-result.json
+          test "$code" -ne 0
+          python3 - <<'PY'
+          import json
+          r=json.load(open('/tmp/tamper-result.json'))
+          assert r['decision']=='REJECT'
+          assert r['reason']=='PAYLOAD_HASH_MISMATCH'
+          print('TAMPER_GUARD=PASS')
+          PY
