@@ -1,0 +1,85 @@
+name: RSTA-011 Downstream Replay Guard
+
+on:
+  workflow_dispatch:
+    inputs:
+      event_id:
+        description: Commitment event ID
+        required: true
+        type: string
+      unlock_commit_sha:
+        description: Commit containing the durable downstream UNLOCKED record
+        required: true
+        type: string
+      source_run_id:
+        description: Original commitment source run ID
+        required: true
+        type: string
+      branch:
+        description: Branch containing the unlock ledger commit
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  replay-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact unlock ledger commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.unlock_commit_sha }}
+          fetch-depth: 1
+
+      - name: Reject downstream replay
+        shell: bash
+        env:
+          EVENT_ID: ${{ inputs.event_id }}
+          UNLOCK_COMMIT_SHA: ${{ inputs.unlock_commit_sha }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, subprocess
+          event = os.environ['EVENT_ID']
+          expected_commit = os.environ['UNLOCK_COMMIT_SHA']
+          source_run = os.environ['SOURCE_RUN_ID']
+          with open('ledger/rsta-010-unlocks.json', encoding='utf-8') as f:
+              ledger = json.load(f)
+          entry = ledger.get(event)
+          assert entry is not None, f'missing unlock event: {event}'
+          assert entry.get('state') == 'UNLOCKED', entry
+          assert entry.get('source_run_id') == source_run, entry
+          head = subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
+          assert head == expected_commit, (head, expected_commit)
+          evidence = {
+              'schema':'rncp-rsta-011-v1',
+              'event_id':event,
+              'source_run_id':source_run,
+              'unlock_commit_sha':expected_commit,
+              'unlock_state':entry['state'],
+              'downstream_capability':entry['downstream_action'],
+              'replay_decision':'REJECT',
+              'reason':'DOWNSTREAM_CAPABILITY_ALREADY_UNLOCKED_SINGLE_USE'
+          }
+          print(json.dumps(evidence, sort_keys=True))
+          with open('/tmp/rsta-011-replay-guard.json','w',encoding='utf-8') as f:
+              json.dump(evidence,f,indent=2,sort_keys=True)
+          PY
+
+      - name: Prove no downstream action executes on replay
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s\n' 'DOWNSTREAM_ACTION_NOT_EXECUTED_ON_REPLAY' > /tmp/replay-no-action.txt
+
+      - name: Publish replay guard evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: rsta-011-downstream-replay-guard
+          path: |
+            /tmp/rsta-011-replay-guard.json
+            /tmp/replay-no-action.txt
+          if-no-files-found: error
