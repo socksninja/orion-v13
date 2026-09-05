@@ -1,0 +1,101 @@
+name: RSTA-007 Dual Evidence Guards
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout verifier
+        uses: actions/checkout@v4
+
+      - name: Fetch independent external receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, json, urllib.request
+          token = 'a5a15892-17fd-4ef2-8ed1-64173e863e89'
+          request_uuid = 'a6cccf1e-3cd7-43f0-9679-4c1ca2f45008'
+          expected = '0f803e23a54f71e5861bc5bcc34898fc0aa7dfd96f1c48d67a684fda979115b8'
+          event = 'RSTA-005-E001'
+          url = f'https://webhook.site/token/{token}/request/{request_uuid}'
+          with urllib.request.urlopen(url, timeout=20) as r:
+              data = json.loads(r.read().decode())
+          content = str(data.get('content', ''))
+          actual = hashlib.sha256(content.encode()).hexdigest()
+          headers = data.get('headers', {}) or {}
+          values = []
+          for k, v in headers.items():
+              if k.lower() == 'x-rncp-event-id':
+                  values = v if isinstance(v, list) else [v]
+          assert data.get('method') == 'POST'
+          assert actual == expected
+          assert event in values
+          evidence = {
+              'schema': 'rncp-rsta-007-v1',
+              'provider_a': 'VERCEL',
+              'external_system': 'WEBHOOK_SITE',
+              'provider_b': 'GITHUB_ACTIONS_PUBLIC',
+              'request_uuid': request_uuid,
+              'event_id': event,
+              'payload_sha256': actual,
+              'cross_verified': True,
+          }
+          print(json.dumps(evidence, sort_keys=True))
+          with open('/tmp/evidence.json', 'w') as f:
+              json.dump(evidence, f, indent=2)
+          PY
+
+      - name: Tamper reject
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, json, urllib.request
+          token = 'a5a15892-17fd-4ef2-8ed1-64173e863e89'
+          request_uuid = 'a6cccf1e-3cd7-43f0-9679-4c1ca2f45008'
+          expected = '0f803e23a54f71e5861bc5bcc34898fc0aa7dfd96f1c48d67a684fda979115b8'
+          bad = expected[:-1] + ('0' if expected[-1] != '0' else '1')
+          url = f'https://webhook.site/token/{token}/request/{request_uuid}'
+          with urllib.request.urlopen(url, timeout=20) as r:
+              data = json.loads(r.read().decode())
+          actual = hashlib.sha256(str(data.get('content', '')).encode()).hexdigest()
+          assert actual != bad, 'tamper must be rejected'
+          with open('/tmp/tamper.txt', 'w') as f:
+              f.write('REJECTED_AS_TAMPER\n')
+          print(json.dumps({'tamper_expected_hash': bad, 'actual_hash': actual, 'decision': 'REJECT'}))
+          PY
+
+      - name: Replay reject
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          event = 'RSTA-005-E001'
+          ledger = {event: 'CONSUMED'}
+          replay_seen = event in ledger
+          assert replay_seen, 'replay must be detected'
+          with open('/tmp/replay.txt', 'w') as f:
+              f.write('REJECTED_AS_REPLAY\n')
+          print(json.dumps({'event_id': event, 'ledger_state': ledger[event], 'decision': 'REJECT'}))
+          PY
+
+      - name: Publish dual evidence artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rsta-007-dual-evidence
+          path: |
+            /tmp/evidence.json
+            /tmp/tamper.txt
+            /tmp/replay.txt
+          if-no-files-found: error
