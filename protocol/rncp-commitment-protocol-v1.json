@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/socksninja/orion-v13/blob/main/protocol/rncp-commitment-protocol-v1.json",
+  "title": "RNCP Provider-Neutral Commitment Protocol v1",
+  "type": "object",
+  "required": ["protocol", "event_id", "issuer", "verifier", "executor", "reality_observer", "commitment", "capability", "replay_policy"],
+  "properties": {
+    "protocol": {"const": "RNCP-COMMITMENT-V1"},
+    "event_id": {"type": "string", "minLength": 8},
+    "issuer": {"$ref": "#/$defs/actor"},
+    "verifier": {"$ref": "#/$defs/actor"},
+    "executor": {"$ref": "#/$defs/actor"},
+    "reality_observer": {"$ref": "#/$defs/actor"},
+    "commitment": {
+      "type": "object",
+      "required": ["payload", "payload_sha256", "state"],
+      "properties": {
+        "payload": {"type": "string", "minLength": 1},
+        "payload_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "state": {"const": "VALID"}
+      },
+      "additionalProperties": false
+    },
+    "capability": {
+      "type": "object",
+      "required": ["name", "single_use"],
+      "properties": {"name": {"type": "string"}, "single_use": {"const": true}},
+      "additionalProperties": false
+    },
+    "replay_policy": {"const": "REJECT_AFTER_CONSUMPTION"}
+  },
+  "$defs": {
+    "actor": {
+      "type": "object",
+      "required": ["provider", "executor_class"],
+      "properties": {"provider": {"type": "string"}, "executor_class": {"type": "string"}},
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
