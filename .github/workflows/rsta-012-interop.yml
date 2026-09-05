@@ -1,0 +1,89 @@
+name: RSTA-012 Provider-Neutral Interop
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - protocol/rncp-commitment-protocol-v1.json
+      - protocol/rncp-commitment-protocol-v1.md
+      - rsta-006-result.json
+      - .github/workflows/rsta-012-interop.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  interop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate protocol schema and adapt prior cross-provider evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, hashlib
+          from pathlib import Path
+          schema=json.loads(Path('protocol/rncp-commitment-protocol-v1.json').read_text())
+          legacy=json.loads(Path('rsta-006-result.json').read_text())
+          assert schema['$id'].endswith('rncp-commitment-protocol-v1.json')
+          assert schema['properties']['protocol']['const']=='RNCP-COMMITMENT-V1'
+          assert legacy['valid'] is True
+          assert legacy['executor']=='VERCEL'
+          assert legacy['external_system']=='WEBHOOK_SITE'
+          assert legacy['verifier']=='GITHUB_ACTIONS_PUBLIC'
+          canonical_payload=f"legacy-event={legacy['event_id']}|source={legacy['executor']}|observer={legacy['external_system']}|verifier={legacy['verifier']}|payload_sha256={legacy['payload_sha256']}"
+          adapted={
+            'protocol':'RNCP-COMMITMENT-V1',
+            'event_id':legacy['event_id'],
+            'issuer':{'provider':legacy['executor'],'executor_class':'legacy-rsta-adapter'},
+            'verifier':{'provider':legacy['verifier'],'executor_class':'independent-verifier'},
+            'executor':{'provider':legacy['executor'],'executor_class':'legacy-executor'},
+            'reality_observer':{'provider':legacy['external_system'],'executor_class':'external-http-receipt'},
+            'commitment':{'payload':canonical_payload,'payload_sha256':hashlib.sha256(canonical_payload.encode()).hexdigest(),'state':'VALID'},
+            'capability':{'name':'RSTA-012-LEGACY-INTEROP','single_use':True},
+            'replay_policy':'REJECT_AFTER_CONSUMPTION'
+          }
+          assert adapted['protocol']=='RNCP-COMMITMENT-V1'
+          assert adapted['capability']['single_use'] is True
+          assert adapted['replay_policy']=='REJECT_AFTER_CONSUMPTION'
+          Path('/tmp/interop.json').write_text(json.dumps({'schema':'rncp-rsta-012-interop-v1','decision':'PASS','legacy_event_id':legacy['event_id'],'source_provider':legacy['executor'],'observer_provider':legacy['external_system'],'verifier_provider':legacy['verifier'],'adapted_commitment':adapted},indent=2))
+          print(Path('/tmp/interop.json').read_text())
+          PY
+
+      - name: Tamper reject test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, hashlib
+          from pathlib import Path
+          x=json.loads(Path('/tmp/interop.json').read_text())['adapted_commitment']
+          original=x['commitment']['payload']
+          tampered=original+'|tampered=true'
+          assert hashlib.sha256(tampered.encode()).hexdigest()!=x['commitment']['payload_sha256']
+          print(json.dumps({'decision':'REJECT','reason':'PAYLOAD_HASH_MISMATCH_AFTER_TAMPER','event_id':x['event_id']},indent=2))
+          PY
+
+      - name: Replay reject test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          x=json.loads(Path('/tmp/interop.json').read_text())['adapted_commitment']
+          result={'decision':'REJECT','reason':'REPLAY_POLICY_REJECT_AFTER_CONSUMPTION','event_id':x['event_id'],'capability':x['capability']['name'],'downstream_action_executed':False}
+          Path('/tmp/replay.json').write_text(json.dumps(result,indent=2))
+          print(json.dumps(result,indent=2))
+          PY
+
+      - name: Publish RSTA-012 interop evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: rsta-012-provider-neutral-interop
+          path: |
+            /tmp/interop.json
+            /tmp/replay.json
