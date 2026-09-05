@@ -1,0 +1,74 @@
+name: RSTA-006 Independent Cross-Provider Verification
+
+on:
+  workflow_dispatch:
+    inputs:
+      token_id:
+        description: Webhook.site token UUID
+        required: true
+        type: string
+      request_uuid:
+        description: Webhook.site request UUID
+        required: true
+        type: string
+      expected_sha256:
+        description: Expected SHA-256 of canonical payload
+        required: true
+        type: string
+      expected_event_id:
+        description: Expected RNCP event ID
+        required: true
+        type: string
+  push:
+    paths:
+      - .github/workflows/rsta-006-independent-verify.yml
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout verifier
+        uses: actions/checkout@v4
+
+      - name: Query Webhook.site directly
+        env:
+          TOKEN_ID: ${{ inputs.token_id || 'a5a15892-17fd-4ef2-8ed1-64173e863e89' }}
+          REQUEST_UUID: ${{ inputs.request_uuid || 'a6cccf1e-3cd7-43f0-9679-4c1ca2f45008' }}
+          EXPECTED_SHA256: ${{ inputs.expected_sha256 || '0f803e23a54f71e5861bc5bcc34898fc0aa7dfd96f1c48d67a684fda979115b8' }}
+          EXPECTED_EVENT_ID: ${{ inputs.expected_event_id || 'RSTA-005-E001' }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, json, os, urllib.request, sys
+          token=os.environ['TOKEN_ID']
+          reqid=os.environ['REQUEST_UUID']
+          expected=os.environ['EXPECTED_SHA256']
+          event=os.environ['EXPECTED_EVENT_ID']
+          url=f'https://webhook.site/token/{token}/request/{reqid}'
+          with urllib.request.urlopen(url, timeout=20) as r:
+              data=json.loads(r.read().decode())
+          content=str(data.get('content',''))
+          actual=hashlib.sha256(content.encode()).hexdigest()
+          headers=data.get('headers',{}) or {}
+          values=[]
+          for k,v in headers.items():
+              if k.lower()=='x-rncp-event-id': values = v if isinstance(v,list) else [v]
+          print(json.dumps({'token_id':token,'request_uuid':reqid,'method':data.get('method'),'actual_sha256':actual,'expected_sha256':expected,'event_header':values}, indent=2))
+          assert data.get('method')=='POST'
+          assert actual==expected
+          assert event in values
+          open('rsta-006-result.json','w').write(json.dumps({'schema':'rncp-rsta-006-result-v1','valid':True,'executor':'VERCEL','external_system':'WEBHOOK_SITE','verifier':'GITHUB_ACTIONS_PUBLIC','token_id':token,'request_uuid':reqid,'method':'POST','payload_sha256':actual,'event_id':event},indent=2)+'\n')
+          PY
+
+      - name: Commit independent verification evidence
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name 'rncp-verifier-bot'
+          git config user.email 'rncp-verifier-bot@users.noreply.github.com'
+          git add rsta-006-result.json
+          git commit -m '[RSTA-006] commit cross-provider independent verification' || exit 0
+          git push
