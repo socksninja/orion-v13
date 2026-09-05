@@ -1,0 +1,15 @@
+{
+  "protocol": "RNCP-COMMITMENT-V1",
+  "event_id": "RSTA-013-CONFORMANCE-001",
+  "issuer": {"provider": "PROVIDER_A", "executor_class": "reference-issuer"},
+  "verifier": {"provider": "PROVIDER_B", "executor_class": "reference-verifier"},
+  "executor": {"provider": "PROVIDER_C", "executor_class": "reference-executor"},
+  "reality_observer": {"provider": "PROVIDER_D", "executor_class": "reality-receipt"},
+  "commitment": {
+    "payload": "amount=100|currency=USD|action=release|nonce=RSTA-013-001",
+    "payload_sha256": "b6f24d8aa3eae0cc943fa4ac43871d219697f3ad4a154a3b0b02a2b7e9bcdb4f",
+    "state": "VALID"
+  },
+  "capability": {"name": "RSTA-013-DEMO-ACTION", "single_use": true},
+  "replay_policy": "REJECT_AFTER_CONSUMPTION"
+}
