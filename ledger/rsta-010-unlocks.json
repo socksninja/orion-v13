@@ -7,5 +7,13 @@
     "ledger_commit_sha": "b861cd1e69d22a87c2013e64a2e2b3f8374ce0f3",
     "payload_sha256": "16491e09ee376b12290b888ad460801490da4acb50b3a52a542d4b576279022f",
     "downstream_action": "RSTA-010-DEMO-ACTION"
+  },
+  "RSTA-009-33959395980": {
+    "state": "UNLOCKED",
+    "event_id": "RSTA-009-33959395980",
+    "source_run_id": "33959395980",
+    "ledger_commit_sha": "4c7d1187c83bf330d9b8c7390cf970bcdae77400",
+    "payload_sha256": "941411e8695e77ed71908252c8a31de3de6d2785241ec14399dc921572be70e5",
+    "downstream_action": "RSTA-010-DEMO-ACTION"
   }
 }
