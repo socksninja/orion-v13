@@ -1,0 +1,127 @@
+name: RSTA-012 Independent Verifier
+
+on:
+  workflow_dispatch:
+    inputs:
+      event_id:
+        required: true
+        type: string
+      payload_sha256:
+        required: true
+        type: string
+      ledger_commit_sha:
+        required: true
+        type: string
+      source_run_id:
+        required: true
+        type: string
+      branch:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: write
+
+env:
+  WEBHOOK_TOKEN: a5a15892-17fd-4ef2-8ed1-64173e863e89
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact issuer ledger commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ledger_commit_sha }}
+
+      - name: Independently fetch and verify external receipt
+        id: verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ inputs.ledger_commit_sha }}"
+          python3 - <<'PY'
+          import json, hashlib, os, urllib.request
+          token=os.environ['WEBHOOK_TOKEN']
+          event=os.environ['EVENT_ID']
+          expected=os.environ['EXPECTED_SHA']
+          url=f'https://webhook.site/token/{token}/requests?sorting=newest'
+          with urllib.request.urlopen(url, timeout=20) as r:
+              data=json.load(r)
+          matches=[]
+          for item in data.get('data',[]):
+              headers={str(k).lower(): str(v) for k,v in (item.get('headers') or {}).items()}
+              if headers.get('x-rncp-event-id') == event:
+                  body=item.get('content','')
+                  if isinstance(body,dict): body=json.dumps(body,separators=(',',':'),sort_keys=True)
+                  matches.append((item,body))
+          if not matches:
+              raise SystemExit(f'no external receipt found for {event}')
+          item,body=matches[0]
+          actual=hashlib.sha256(body.encode()).hexdigest()
+          # The receipt body is the canonical commitment object; validate its embedded payload hash too.
+          obj=json.loads(body)
+          embedded=obj['commitment']['payload_sha256']
+          if embedded != expected:
+              raise SystemExit(f'embedded payload hash mismatch: {embedded} != {expected}')
+          if obj['event_id'] != event or obj['protocol'] != 'RNCP-COMMITMENT-V1' or obj['commitment']['state'] != 'VALID':
+              raise SystemExit('protocol envelope validation failed')
+          print(json.dumps({"decision":"PASS","event_id":event,"external_request_id":item.get('uuid'),"receipt_sha256":actual,"embedded_payload_sha256":embedded,"protocol":obj['protocol']},indent=2))
+          with open('/tmp/verification.json','w') as f:
+              json.dump({"schema":"rncp-rsta-012-verification-v1","decision":"PASS","event_id":event,"source_run_id":os.environ['SOURCE_RUN_ID'],"ledger_commit_sha":os.environ['LEDGER_COMMIT_SHA'],"expected_payload_sha256":expected,"external_request_id":item.get('uuid'),"receipt_sha256":actual,"verifier_provider":"GITHUB_ACTIONS","external_provider":"WEBHOOK_SITE"},f,indent=2)
+          PY
+        env:
+          EVENT_ID: ${{ inputs.event_id }}
+          EXPECTED_SHA: ${{ inputs.payload_sha256 }}
+          LEDGER_COMMIT_SHA: ${{ inputs.ledger_commit_sha }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+
+      - name: Persist independent verification
+        shell: bash
+        env:
+          EVENT_ID: ${{ inputs.event_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p ledger
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('/tmp/verification.json')
+          entry=json.loads(p.read_text())
+          path=Path('ledger/rsta-012-verifications.json')
+          ledger=json.loads(path.read_text()) if path.exists() else {"schema":"rncp-rsta-012-verifications-v1","events":{}}
+          ledger['events'][entry['event_id']]=entry
+          path.write_text(json.dumps(ledger,indent=2)+"\n")
+          PY
+          git config user.name "rncp-verifier"
+          git config user.email "rncp-verifier@users.noreply.github.com"
+          git add ledger/rsta-012-verifications.json
+          git commit -m "RSTA-012: persist independent verification ${EVENT_ID}"
+          git push
+          echo "VERIFIER_COMMIT_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Dispatch executor only after PASS
+        uses: actions/github-script@v7
+        env:
+          EVENT_ID: ${{ inputs.event_id }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          VERIFIER_COMMIT_SHA: ${{ env.VERIFIER_COMMIT_SHA }}
+          PAYLOAD_SHA256: ${{ inputs.payload_sha256 }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'rsta-012-execute.yml',
+              ref: 'main',
+              inputs: {
+                event_id: process.env.EVENT_ID,
+                source_run_id: process.env.SOURCE_RUN_ID,
+                verifier_commit_sha: process.env.VERIFIER_COMMIT_SHA,
+                payload_sha256: process.env.PAYLOAD_SHA256,
+                branch: 'main'
+              }
+            });
+            console.log('RSTA-012 executor dispatch accepted after independent PASS');
