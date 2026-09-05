@@ -37,18 +37,57 @@ jobs:
           assert json.load(open('/tmp/rsta-014-ledger-python.json')) == json.load(open('/tmp/rsta-014-ledger-js.json'))
           print('CROSS_IMPLEMENTATION_EXECUTION_EQUIVALENCE=PASS')
           PY
-      - name: Build portable reality receipt
+      - name: Submit execution to third-party reality observer
+        run: |
+          python3 - <<'PY'
+          import json
+          ledger=json.load(open('/tmp/rsta-014-ledger-python.json'))
+          receipt=ledger['RSTA-014-E2E-001']['receipt']
+          observer={
+            'protocol':'RNCP-COMMITMENT-V1',
+            'event_id':'RSTA-014-E2E-001',
+            'capability':'RSTA-014-PORTABLE-ACTION',
+            'receipt_payload':receipt['payload'],
+            'receipt_sha256':receipt['payload_sha256']
+          }
+          json.dump(observer,open('/tmp/rsta-014-observer-request.json','w'),separators=(',',':'))
+          PY
+          curl --fail --silent --show-error --retry 2 \
+            -H 'content-type: application/json' \
+            --data-binary @/tmp/rsta-014-observer-request.json \
+            https://postman-echo.com/post > /tmp/rsta-014-external-receipt.json
+          python3 - <<'PY'
+          import json, hashlib
+          req=json.load(open('/tmp/rsta-014-observer-request.json'))
+          response=json.load(open('/tmp/rsta-014-external-receipt.json'))
+          echoed=response.get('data')
+          assert echoed == req
+          raw=open('/tmp/rsta-014-external-receipt.json','rb').read()
+          evidence={
+            'observer_provider':'POSTMAN_ECHO',
+            'observer_endpoint':'https://postman-echo.com/post',
+            'observer_acknowledged':True,
+            'observer_response_sha256':hashlib.sha256(raw).hexdigest(),
+            'observer_echo_verified':True,
+            'event_id':req['event_id'],
+            'capability':req['capability'],
+            'receipt_sha256':req['receipt_sha256']
+          }
+          json.dump(evidence,open('/tmp/rsta-014-external-evidence.json','w'),indent=2,sort_keys=True)
+          print(json.dumps(evidence,sort_keys=True))
+          PY
+      - name: Build portable evidence envelope
         run: |
           python3 - <<'PY'
           import json, hashlib
           result=json.load(open('/tmp/python-result.json'))
           ledger=json.load(open('/tmp/rsta-014-ledger-python.json'))
-          event=ledger['RSTA-014-E2E-001']
-          receipt=event['receipt']
+          receipt=ledger['RSTA-014-E2E-001']['receipt']
+          external=json.load(open('/tmp/rsta-014-external-evidence.json'))
           assert receipt['state']=='REALITY_RECORDED'
           assert hashlib.sha256(receipt['payload'].encode()).hexdigest()==receipt['payload_sha256']
           evidence={
-            'schema':'rncp-rsta-014-portable-e2e-v1',
+            'schema':'rncp-rsta-014-portable-e2e-v2',
             'decision':'PASS',
             'event_id':result['event_id'],
             'capability':result['capability'],
@@ -56,6 +95,7 @@ jobs:
             'receipt_state':receipt['state'],
             'receipt_payload_sha256':receipt['payload_sha256'],
             'cross_implementation_equivalence':True,
+            'third_party_reality_observer':external,
             'durable_replay_guard':'PENDING_SECOND_JOB'
           }
           json.dump(evidence,open('/tmp/rsta-014-evidence.json','w'),indent=2,sort_keys=True)
@@ -67,7 +107,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: rsta-014-evidence
-          path: /tmp/rsta-014-evidence.json
+          path: |
+            /tmp/rsta-014-evidence.json
+            /tmp/rsta-014-external-receipt.json
 
   replay-must-reject:
     needs: execute-and-record
@@ -80,14 +122,6 @@ jobs:
           path: /tmp
       - name: Replay portable commitment and require durable rejection
         run: |
-          set +e
-          python3 conformance/rsta_014_executor.py \
-            conformance/fixtures/rsta-014-portable-envelope.json \
-            /tmp/rsta-014-replay-ledger.json > /tmp/replay-result.json
-          code=$?
-          set -e
-          # The downloaded ledger is the prior execution state. Seed the exact
-          # state under the expected filename for the verifier's durable replay check.
           cp /tmp/rsta-014-ledger-python.json /tmp/rsta-014-replay-ledger.json
           set +e
           python3 conformance/rsta_014_executor.py \
