@@ -1,0 +1,154 @@
+name: RSTA-012 Capability Executor
+
+on:
+  workflow_dispatch:
+    inputs:
+      event_id:
+        required: true
+        type: string
+      source_run_id:
+        required: true
+        type: string
+      verifier_commit_sha:
+        required: true
+        type: string
+      payload_sha256:
+        required: true
+        type: string
+      branch:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: write
+
+env:
+  WEBHOOK_TOKEN: a5a15892-17fd-4ef2-8ed1-64173e863e89
+
+jobs:
+  execute:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact verified state
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.verifier_commit_sha }}
+
+      - name: Verify capability is unlocked before action
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ inputs.verifier_commit_sha }}"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          event='${{ inputs.event_id }}'
+          expected='${{ inputs.payload_sha256 }}'
+          ledger=json.loads(Path('ledger/rsta-012-verifications.json').read_text())
+          entry=ledger['events'][event]
+          assert entry['decision']=='PASS', entry
+          assert entry['expected_payload_sha256']==expected, entry
+          print(json.dumps({"capability":"RSTA-012-DEMO-ACTION","decision":"UNLOCK","event_id":event,"unlock_condition":"INDEPENDENT_EXTERNAL_EVIDENCE_VERIFIED"},indent=2))
+          PY
+
+      - name: Execute real downstream action against external observer
+        id: action
+        shell: bash
+        run: |
+          set -euo pipefail
+          REALITY_ID="RSTA-012-REALITY-${GITHUB_RUN_ID}"
+          ACTION_PAYLOAD="RNCP-RSTA-012-ACTION|commitment=${{ inputs.event_id }}|source_run=${{ inputs.source_run_id }}|executor_run=${GITHUB_RUN_ID}|action=CAPABILITY_UNLOCKED_DOWNSTREAM_ACTION"
+          ACTION_SHA256=$(printf '%s' "$ACTION_PAYLOAD" | sha256sum | awk '{print $1}')
+          curl -fsS -X POST "https://webhook.site/${WEBHOOK_TOKEN}" \
+            -H "Content-Type: text/plain" \
+            -H "X-RNCP-Reality-Event-ID: ${REALITY_ID}" \
+            -H "X-RNCP-Commitment-ID: ${{ inputs.event_id }}" \
+            -H "X-RNCP-Role: executor" \
+            --data-binary "$ACTION_PAYLOAD" > /tmp/action-response.txt
+          python3 - <<'PY'
+          import json, os
+          out={"schema":"rncp-rsta-012-reality-v1","state":"ACTION_EXECUTED","reality_event_id":os.environ['REALITY_ID'],"commitment_event_id":os.environ['COMMITMENT_ID'],"action_payload":os.environ['ACTION_PAYLOAD'],"action_payload_sha256":os.environ['ACTION_SHA256'],"executor_provider":"GITHUB_ACTIONS","observer_provider":"WEBHOOK_SITE","executor_run_id":os.environ['EXECUTOR_RUN_ID']}
+          open('/tmp/reality.json','w').write(json.dumps(out,indent=2))
+          print(json.dumps(out,indent=2))
+          PY
+          echo "REALITY_ID=${REALITY_ID}" >> "$GITHUB_OUTPUT"
+          echo "ACTION_SHA256=${ACTION_SHA256}" >> "$GITHUB_OUTPUT"
+        env:
+          REALITY_ID: "RSTA-012-REALITY-${{ github.run_id }}"
+          COMMITMENT_ID: ${{ inputs.event_id }}
+          ACTION_PAYLOAD: "RNCP-RSTA-012-ACTION|commitment=${{ inputs.event_id }}|source_run=${{ inputs.source_run_id }}|executor_run=${{ github.run_id }}|action=CAPABILITY_UNLOCKED_DOWNSTREAM_ACTION"
+          ACTION_SHA256: ""
+          EXECUTOR_RUN_ID: ${{ github.run_id }}
+
+      - name: Independently fetch external reality receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, hashlib, os, urllib.request
+          token=os.environ['WEBHOOK_TOKEN']; reality=os.environ['REALITY_ID']; expected=os.environ['ACTION_SHA256']
+          url=f'https://webhook.site/token/{token}/requests?sorting=newest'
+          with urllib.request.urlopen(url, timeout=20) as r: data=json.load(r)
+          matches=[]
+          for item in data.get('data',[]):
+              headers={str(k).lower():str(v) for k,v in (item.get('headers') or {}).items()}
+              if headers.get('x-rncp-reality-event-id')==reality:
+                  body=item.get('content','')
+                  matches.append((item,body))
+          if not matches: raise SystemExit(f'no external reality receipt for {reality}')
+          item,body=matches[0]
+          actual=hashlib.sha256(body.encode()).hexdigest()
+          if actual != expected: raise SystemExit(f'reality hash mismatch: {actual} != {expected}')
+          result=json.loads(open('/tmp/reality.json').read())
+          result.update({"observer_request_id":item.get('uuid'),"observer_receipt_sha256":actual,"observer_evidence_verified":True})
+          open('/tmp/reality.json','w').write(json.dumps(result,indent=2))
+          print(json.dumps(result,indent=2))
+          PY
+        env:
+          REALITY_ID: ${{ steps.action.outputs.REALITY_ID }}
+          ACTION_SHA256: ${{ steps.action.outputs.ACTION_SHA256 }}
+          WEBHOOK_TOKEN: ${{ env.WEBHOOK_TOKEN }}
+
+      - name: Persist durable reality state
+        shell: bash
+        env:
+          EVENT_ID: ${{ inputs.event_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p ledger
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          entry=json.loads(Path('/tmp/reality.json').read_text())
+          path=Path('ledger/rsta-012-reality.json')
+          ledger=json.loads(path.read_text()) if path.exists() else {"schema":"rncp-rsta-012-reality-ledger-v1","events":{}}
+          event=entry['commitment_event_id']
+          if event in ledger['events']: raise SystemExit(f'REPLAY: reality already exists for {event}')
+          ledger['events'][event]=entry
+          path.write_text(json.dumps(ledger,indent=2)+"\n")
+          PY
+          git config user.name "rncp-executor"
+          git config user.email "rncp-executor@users.noreply.github.com"
+          git add ledger/rsta-012-reality.json
+          git commit -m "RSTA-012: persist external reality event ${EVENT_ID}"
+          git push
+          echo "REALITY_COMMIT_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Dispatch replay guard
+        uses: actions/github-script@v7
+        env:
+          EVENT_ID: ${{ inputs.event_id }}
+          REALITY_COMMIT_SHA: ${{ env.REALITY_COMMIT_SHA }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'rsta-012-replay.yml',
+              ref: 'main',
+              inputs: {event_id: process.env.EVENT_ID, reality_commit_sha: process.env.REALITY_COMMIT_SHA, source_run_id: process.env.SOURCE_RUN_ID, branch:'main'}
+            });
+            console.log('RSTA-012 replay guard dispatch accepted');
