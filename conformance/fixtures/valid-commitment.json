@@ -7,7 +7,7 @@
   "reality_observer": {"provider": "PROVIDER_D", "executor_class": "reality-receipt"},
   "commitment": {
     "payload": "amount=100|currency=USD|action=release|nonce=RSTA-013-001",
-    "payload_sha256": "b6f24d8aa3eae0cc943fa4ac43871d219697f3ad4a154a3b0b02a2b7e9bcdb4f",
+    "payload_sha256": "f46fcf832a91f21416b5446e914f6593319026f63bd3e23fa504ab4baab77a3b",
     "state": "VALID"
   },
   "capability": {"name": "RSTA-013-DEMO-ACTION", "single_use": true},
