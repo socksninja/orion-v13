@@ -1,0 +1,143 @@
+name: RSTA-010 Capability Unlock
+
+on:
+  workflow_dispatch:
+    inputs:
+      event_id:
+        description: Commitment event ID
+        required: true
+        type: string
+      ledger_commit_sha:
+        description: Durable commitment ledger commit
+        required: true
+        type: string
+      source_run_id:
+        description: Source commitment run ID
+        required: true
+        type: string
+      expected_sha256:
+        description: Commitment payload SHA-256
+        required: true
+        type: string
+      branch:
+        description: Branch containing the ledger commit
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  unlock:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact commitment commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ledger_commit_sha }}
+          fetch-depth: 1
+
+      - name: Verify and atomically unlock downstream capability
+        id: verify
+        shell: bash
+        env:
+          EVENT_ID: ${{ inputs.event_id }}
+          LEDGER_COMMIT_SHA: ${{ inputs.ledger_commit_sha }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          EXPECTED_SHA256: ${{ inputs.expected_sha256 }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, json, os, subprocess, time
+          event = os.environ['EVENT_ID']
+          ledger_commit = os.environ['LEDGER_COMMIT_SHA']
+          source_run = os.environ['SOURCE_RUN_ID']
+          expected = os.environ['EXPECTED_SHA256']
+          with open('ledger/rsta-008-consumed.json', encoding='utf-8') as f:
+              ledger = json.load(f)
+          entry = ledger.get(event)
+          assert entry is not None, f'missing event: {event}'
+          assert entry.get('state') == 'CONSUMED', entry
+          assert entry.get('source_run_id') == source_run, entry
+          actual = hashlib.sha256(entry.get('payload','').encode()).hexdigest()
+          assert actual == expected, (actual, expected)
+          head = subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
+          assert head == ledger_commit, (head, ledger_commit)
+          print(json.dumps({
+              'event_id': event,
+              'decision': 'UNLOCK',
+              'reason': 'VALID_DURABLE_COMMITMENT',
+              'ledger_commit_sha': ledger_commit,
+              'source_run_id': source_run,
+              'payload_sha256': actual
+          }, sort_keys=True))
+          with open('/tmp/rsta-010-unlock.json','w',encoding='utf-8') as f:
+              json.dump({
+                  'schema':'rncp-rsta-010-v1',
+                  'event_id':event,
+                  'decision':'UNLOCK',
+                  'reason':'VALID_DURABLE_COMMITMENT',
+                  'ledger_commit_sha':ledger_commit,
+                  'source_run_id':source_run,
+                  'payload_sha256':actual,
+                  'downstream_capability':'RSTA-010-DEMO-ACTION'
+              },f,indent=2,sort_keys=True)
+          PY
+
+      - name: Execute downstream action only after unlock
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s\n' "DOWNSTREAM_ACTION_EXECUTED_ONLY_AFTER_VALID_COMMITMENT" > /tmp/downstream-action.txt
+
+      - name: Persist downstream unlock record
+        uses: actions/github-script@v7
+        env:
+          EVENT_ID: ${{ inputs.event_id }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          LEDGER_COMMIT_SHA: ${{ inputs.ledger_commit_sha }}
+          EXPECTED_SHA256: ${{ inputs.expected_sha256 }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const path = 'ledger/rsta-010-unlocks.json';
+            const branch = '${{ inputs.branch }}';
+            const entry = {
+              state: 'UNLOCKED',
+              event_id: process.env.EVENT_ID,
+              source_run_id: process.env.SOURCE_RUN_ID,
+              ledger_commit_sha: process.env.LEDGER_COMMIT_SHA,
+              payload_sha256: process.env.EXPECTED_SHA256,
+              downstream_action: 'RSTA-010-DEMO-ACTION'
+            };
+            let ledger = {schema:'rncp-rsta-010-unlock-ledger-v1'};
+            let sha = undefined;
+            try {
+              const current = await github.rest.repos.getContent({owner:context.repo.owner, repo:context.repo.repo, path, ref:branch});
+              sha = current.data.sha;
+              ledger = JSON.parse(Buffer.from(current.data.content,'base64').toString('utf8'));
+            } catch (e) {
+              if (e.status !== 404) throw e;
+            }
+            if (ledger[process.env.EVENT_ID]) core.setFailed('unlock already exists; replay refused');
+            ledger[process.env.EVENT_ID] = entry;
+            const content = Buffer.from(JSON.stringify(ledger,null,2)+'\n').toString('base64');
+            const res = await github.rest.repos.createOrUpdateFileContents({
+              owner:context.repo.owner,
+              repo:context.repo.repo,
+              path,
+              message:`RSTA-010: persist downstream unlock ${process.env.EVENT_ID}`,
+              content,
+              sha,
+              branch
+            });
+            console.log(JSON.stringify({event_id:process.env.EVENT_ID, unlock_commit_sha:res.data.commit.sha, state:'UNLOCKED'}));
+
+      - name: Publish unlock evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: rsta-010-capability-unlock
+          path: |
+            /tmp/rsta-010-unlock.json
+            /tmp/downstream-action.txt
+          if-no-files-found: error
