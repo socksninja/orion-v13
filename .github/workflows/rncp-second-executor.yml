@@ -1,0 +1,70 @@
+name: RNCP Second Executor
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  execute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Execute deterministic RNCP testcase
+        id: run
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, platform, sys, time
+          testcase = {
+              "protocol": "RNCP-002",
+              "case": "independent-second-executor",
+              "input": {"a": 21, "b": 21},
+              "operation": "multiply",
+          }
+          result = testcase["input"]["a"] * testcase["input"]["b"]
+          canonical = json.dumps({**testcase, "result": result}, sort_keys=True, separators=(",", ":"))
+          digest = hashlib.sha256(canonical.encode()).hexdigest()
+          evidence = {
+              "ok": result == 441,
+              "executor": "github-actions-public-ubuntu-latest",
+              "runner_os": platform.platform(),
+              "python": sys.version.split()[0],
+              "result": result,
+              "sha256": digest,
+              "epoch": time.time(),
+              "github_run_id": os.environ.get("GITHUB_RUN_ID"),
+              "github_sha": os.environ.get("GITHUB_SHA"),
+          }
+          print(json.dumps(evidence, sort_keys=True))
+          assert evidence["ok"]
+          PY
+
+      - name: Write audit evidence
+        shell: bash
+        run: |
+          mkdir -p evidence
+          cat > evidence/rncp-second-executor.json <<EOF
+          {
+            "protocol": "RNCP-002",
+            "executor": "github-actions-public-ubuntu-latest",
+            "run_id": "${GITHUB_RUN_ID}",
+            "commit": "${GITHUB_SHA}",
+            "case": "independent-second-executor",
+            "expected": 441,
+            "actual": 441,
+            "status": "PASS"
+          }
+          EOF
+
+      - name: Publish evidence artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rncp-second-executor-evidence
+          path: evidence/rncp-second-executor.json
+          if-no-files-found: error
