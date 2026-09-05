@@ -1,0 +1,194 @@
+name: RSTA-015 External Executor Interoperability
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'conformance/fixtures/rsta-014-portable-envelope.json'
+      - 'interop/**'
+      - '.github/workflows/rsta-015-external-executor.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  external-executor:
+    name: Independent external executor
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Execute portable Commitment without RNCP executor imports
+        run: |
+          set -euo pipefail
+          node interop/external_executor.mjs \
+            conformance/fixtures/rsta-014-portable-envelope.json \
+            /tmp/external-ledger.json | tee /tmp/external-result.json
+          python3 - <<'PY'
+          import json
+          r=json.load(open('/tmp/external-result.json'))
+          assert r['decision']=='EXECUTED'
+          assert r['executor_provider']=='EXTERNAL_EXECUTOR_A'
+          assert r['capability']=='RSTA-014-PORTABLE-ACTION'
+          assert r['transition']=='VALID->UNLOCKED->EXECUTED->REALITY_RECORDED'
+          print('EXTERNAL_EXECUTOR_EXECUTION=PASS')
+          PY
+      - name: Submit external receipt to independent HTTP observer
+        run: |
+          python3 - <<'PY'
+          import json
+          ledger=json.load(open('/tmp/external-ledger.json'))
+          receipt=ledger['RSTA-014-E2E-001']['receipt']
+          req={
+            'protocol':'RNCP-COMMITMENT-V1',
+            'event_id':'RSTA-014-E2E-001',
+            'executor_provider':'EXTERNAL_EXECUTOR_A',
+            'capability':'RSTA-014-PORTABLE-ACTION',
+            'receipt_sha256':receipt['payload_sha256'],
+            'receipt_payload':receipt['payload']
+          }
+          json.dump(req, open('/tmp/observer-request.json','w'), separators=(',',':'))
+          PY
+          curl --fail --silent --show-error --retry 2 \
+            -H 'content-type: application/json' \
+            --data-binary @/tmp/observer-request.json \
+            https://postman-echo.com/post > /tmp/observer-response.json
+          python3 - <<'PY'
+          import hashlib, json
+          req=json.load(open('/tmp/observer-request.json'))
+          response=json.load(open('/tmp/observer-response.json'))
+          assert response.get('data') == req
+          external={
+            'provider':'POSTMAN_ECHO',
+            'acknowledged':True,
+            'echo_verified':True,
+            'response_sha256':hashlib.sha256(open('/tmp/observer-response.json','rb').read()).hexdigest()
+          }
+          json.dump(external,open('/tmp/external-observer-evidence.json','w'),indent=2,sort_keys=True)
+          print(json.dumps(external,sort_keys=True))
+          PY
+      - name: Export portable external receipt
+        run: |
+          python3 - <<'PY'
+          import json
+          ledger=json.load(open('/tmp/external-ledger.json'))
+          receipt=ledger['RSTA-014-E2E-001']['receipt']
+          out={
+            'schema':'rncp-rsta-015-external-receipt-v1',
+            'protocol':'RNCP-COMMITMENT-V1',
+            'event_id':'RSTA-014-E2E-001',
+            'executor_provider':'EXTERNAL_EXECUTOR_A',
+            'capability':'RSTA-014-PORTABLE-ACTION',
+            'commitment_sha256':'db805b0226c1c25b27d6e1832fd8d53a4f0ebdc20c55340a91d8bdca9da59b2d',
+            'receipt':receipt,
+            'third_party_observer':json.load(open('/tmp/external-observer-evidence.json'))
+          }
+          json.dump(out,open('/tmp/external-receipt-envelope.json','w'),indent=2,sort_keys=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rsta-015-external-receipt
+          path: |
+            /tmp/external-ledger.json
+            /tmp/external-receipt-envelope.json
+            /tmp/observer-response.json
+
+  rncp-boundary-verifier:
+    name: RNCP boundary verification
+    needs: external-executor
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: rsta-015-external-receipt
+          path: /tmp/external
+      - name: Accept only a portable external receipt
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          p='/tmp/external/external-receipt-envelope.json'
+          x=json.load(open(p))
+          assert x['schema']=='rncp-rsta-015-external-receipt-v1'
+          assert x['executor_provider']=='EXTERNAL_EXECUTOR_A'
+          json.dump(x['receipt'],open('/tmp/external-receipt.json','w'),sort_keys=True)
+          PY
+          python3 interop/rsta_015_verify.py \
+            conformance/fixtures/rsta-014-portable-envelope.json \
+            /tmp/external-receipt.json | tee /tmp/boundary-result.json
+          python3 - <<'PY'
+          import json
+          r=json.load(open('/tmp/boundary-result.json'))
+          assert r['decision']=='ACCEPT'
+          assert r['executor_provider']=='EXTERNAL_EXECUTOR_A'
+          assert r['capability']=='RSTA-014-PORTABLE-ACTION'
+          print('RNCP_BOUNDARY_ACCEPT=PASS')
+          PY
+      - name: Tamper external receipt and require boundary rejection
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          p='/tmp/external-receipt.json'
+          x=json.load(open(p))
+          x['payload']=x['payload']+'|tampered'
+          json.dump(x,open('/tmp/tampered-receipt.json','w'))
+          PY
+          set +e
+          python3 interop/rsta_015_verify.py \
+            conformance/fixtures/rsta-014-portable-envelope.json \
+            /tmp/tampered-receipt.json > /tmp/tampered-boundary.json
+          code=$?
+          set -e
+          cat /tmp/tampered-boundary.json
+          test "$code" -ne 0
+          grep -q 'REALITY_RECEIPT_HASH_INVALID' /tmp/tampered-boundary.json
+          echo 'TAMPER_BOUNDARY_REJECT=PASS'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rsta-015-boundary-evidence
+          path: /tmp/boundary-result.json
+
+  replay-must-reject:
+    name: External executor replay rejection
+    needs: external-executor
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: rsta-015-external-receipt
+          path: /tmp/external
+      - name: Replay exact portable Commitment against durable external ledger
+        run: |
+          set -euo pipefail
+          cp /tmp/external/external-ledger.json /tmp/external-replay-ledger.json
+          set +e
+          node interop/external_executor.mjs \
+            conformance/fixtures/rsta-014-portable-envelope.json \
+            /tmp/external-replay-ledger.json > /tmp/replay-result.json
+          code=$?
+          set -e
+          cat /tmp/replay-result.json
+          test "$code" -ne 0
+          python3 - <<'PY'
+          import json
+          r=json.load(open('/tmp/replay-result.json'))
+          assert r['decision']=='REJECT'
+          assert r['reason']=='DURABLE_EVENT_ALREADY_CONSUMED'
+          assert r['executor_provider']=='EXTERNAL_EXECUTOR_A'
+          print('EXTERNAL_REPLAY_REJECT=PASS')
+          PY
+      - name: Verify observer evidence is bound to same receipt
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          env=json.load(open('/tmp/external/external-receipt-envelope.json'))
+          obs=env['third_party_observer']
+          assert obs['provider']=='POSTMAN_ECHO'
+          assert obs['acknowledged'] is True
+          assert obs['echo_verified'] is True
+          print('THIRD_PARTY_OBSERVER_BINDING=PASS')
+          PY
