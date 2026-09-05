@@ -32,5 +32,14 @@
     "first_verifier": "GITHUB_ACTIONS_PUBLIC",
     "source_run_id": "33959360420",
     "source_commit_sha": "925c8569f1e25da835af07a1d525e9805e180a2a"
+  },
+  "RSTA-009-33959395980": {
+    "state": "CONSUMED",
+    "payload": "RNCP-RSTA-009|run=33959395980|attempt=1|commit=4f17f34a2b2dd56afcc2ddaa26fc63da52e83448",
+    "payload_sha256": "941411e8695e77ed71908252c8a31de3de6d2785241ec14399dc921572be70e5",
+    "source": "GITHUB_ACTIONS_PUBLIC",
+    "first_verifier": "GITHUB_ACTIONS_PUBLIC",
+    "source_run_id": "33959395980",
+    "source_commit_sha": "4f17f34a2b2dd56afcc2ddaa26fc63da52e83448"
   }
 }
