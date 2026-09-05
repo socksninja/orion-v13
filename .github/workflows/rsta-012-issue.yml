@@ -1,6 +1,12 @@
 name: RSTA-012 Portable Commitment Issuer
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/rsta-012-issue.yml
+      - protocol/rncp-commitment-protocol-v1.json
+      - protocol/rncp-commitment-protocol-v1.md
   workflow_dispatch:
 
 permissions:
@@ -8,7 +14,7 @@ permissions:
   actions: write
 
 env:
-  WEBHOOK_TOKEN: a5a15892-17fd-4ef2-8ed1-64173e863e89
+  WEBHOOK_TOKEN: ${{ secrets.WEBHOOK_TOKEN }}
   OBSERVER_URL: https://webhook.site
 
 jobs:
@@ -22,14 +28,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test -n "${WEBHOOK_TOKEN:-}"
           EVENT_ID="RSTA-012-$(date +%s)-${GITHUB_RUN_ID}"
           PAYLOAD="RNCP-RSTA-012|run=${GITHUB_RUN_ID}|attempt=${GITHUB_RUN_ATTEMPT}|commit=${GITHUB_SHA}|nonce=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           PAYLOAD_SHA256=$(printf '%s' "$PAYLOAD" | sha256sum | awk '{print $1}')
           cat > /tmp/commitment.json <<EOF
           {"protocol":"RNCP-COMMITMENT-V1","event_id":"${EVENT_ID}","issuer":{"provider":"GITHUB_ACTIONS","executor_class":"github-hosted-linux"},"verifier":{"provider":"GITHUB_ACTIONS","executor_class":"github-hosted-linux-independent-run"},"executor":{"provider":"GITHUB_ACTIONS","executor_class":"github-hosted-linux-independent-run"},"reality_observer":{"provider":"WEBHOOK_SITE","executor_class":"external-http-receipt"},"commitment":{"payload":"${PAYLOAD}","payload_sha256":"${PAYLOAD_SHA256}","state":"VALID"},"capability":{"name":"RSTA-012-DEMO-ACTION","single_use":true},"replay_policy":"REJECT_AFTER_CONSUMPTION"}
           EOF
-          RESPONSE=$(curl -fsS -X POST "${OBSERVER_URL}/${WEBHOOK_TOKEN}" -H "Content-Type: application/json" -H "X-RNCP-Event-ID: ${EVENT_ID}" -H "X-RNCP-Role: issuer" --data-binary @/tmp/commitment.json)
-          echo "$RESPONSE" > /tmp/observer-post-response.txt
+          curl -fsS -X POST "${OBSERVER_URL}/${WEBHOOK_TOKEN}" -H "Content-Type: application/json" -H "X-RNCP-Event-ID: ${EVENT_ID}" -H "X-RNCP-Role: issuer" --data-binary @/tmp/commitment.json > /tmp/observer-post-response.txt
           python3 - <<'PY'
           import json
           from pathlib import Path
@@ -38,12 +44,10 @@ jobs:
           PY
           echo "EVENT_ID=${EVENT_ID}" >> "$GITHUB_OUTPUT"
           echo "PAYLOAD_SHA256=${PAYLOAD_SHA256}" >> "$GITHUB_OUTPUT"
-          echo "PAYLOAD<<EOF" >> "$GITHUB_OUTPUT"; printf '%s\n' "$PAYLOAD" >> "$GITHUB_OUTPUT"; echo "EOF" >> "$GITHUB_OUTPUT"
           cp /tmp/commitment.json rsta-012-commitment.json
 
       - name: Persist issued commitment
         env:
-          GH_TOKEN: ${{ github.token }}
           EVENT_ID: ${{ steps.issue.outputs.EVENT_ID }}
         shell: bash
         run: |
