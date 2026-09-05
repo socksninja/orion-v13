@@ -24,7 +24,7 @@ permissions:
   actions: write
 
 env:
-  WEBHOOK_TOKEN: a5a15892-17fd-4ef2-8ed1-64173e863e89
+  WEBHOOK_TOKEN: ${{ secrets.WEBHOOK_TOKEN }}
 
 jobs:
   execute:
@@ -57,6 +57,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test -n "${WEBHOOK_TOKEN:-}"
           REALITY_ID="RSTA-012-REALITY-${GITHUB_RUN_ID}"
           ACTION_PAYLOAD="RNCP-RSTA-012-ACTION|commitment=${{ inputs.event_id }}|source_run=${{ inputs.source_run_id }}|executor_run=${GITHUB_RUN_ID}|action=CAPABILITY_UNLOCKED_DOWNSTREAM_ACTION"
           ACTION_SHA256=$(printf '%s' "$ACTION_PAYLOAD" | sha256sum | awk '{print $1}')
@@ -66,9 +67,9 @@ jobs:
             -H "X-RNCP-Commitment-ID: ${{ inputs.event_id }}" \
             -H "X-RNCP-Role: executor" \
             --data-binary "$ACTION_PAYLOAD" > /tmp/action-response.txt
-          python3 - <<'PY'
+          ACTION_PAYLOAD_SHA256="$ACTION_SHA256" python3 - <<'PY'
           import json, os
-          out={"schema":"rncp-rsta-012-reality-v1","state":"ACTION_EXECUTED","reality_event_id":os.environ['REALITY_ID'],"commitment_event_id":os.environ['COMMITMENT_ID'],"action_payload":os.environ['ACTION_PAYLOAD'],"action_payload_sha256":os.environ['ACTION_SHA256'],"executor_provider":"GITHUB_ACTIONS","observer_provider":"WEBHOOK_SITE","executor_run_id":os.environ['EXECUTOR_RUN_ID']}
+          out={"schema":"rncp-rsta-012-reality-v1","state":"ACTION_EXECUTED","reality_event_id":os.environ['REALITY_ID'],"commitment_event_id":os.environ['COMMITMENT_ID'],"action_payload":os.environ['ACTION_PAYLOAD'],"action_payload_sha256":os.environ['ACTION_PAYLOAD_SHA256'],"executor_provider":"GITHUB_ACTIONS","observer_provider":"WEBHOOK_SITE","executor_run_id":os.environ['EXECUTOR_RUN_ID']}
           open('/tmp/reality.json','w').write(json.dumps(out,indent=2))
           print(json.dumps(out,indent=2))
           PY
@@ -78,7 +79,6 @@ jobs:
           REALITY_ID: "RSTA-012-REALITY-${{ github.run_id }}"
           COMMITMENT_ID: ${{ inputs.event_id }}
           ACTION_PAYLOAD: "RNCP-RSTA-012-ACTION|commitment=${{ inputs.event_id }}|source_run=${{ inputs.source_run_id }}|executor_run=${{ github.run_id }}|action=CAPABILITY_UNLOCKED_DOWNSTREAM_ACTION"
-          ACTION_SHA256: ""
           EXECUTOR_RUN_ID: ${{ github.run_id }}
 
       - name: Independently fetch external reality receipt
@@ -108,7 +108,7 @@ jobs:
         env:
           REALITY_ID: ${{ steps.action.outputs.REALITY_ID }}
           ACTION_SHA256: ${{ steps.action.outputs.ACTION_SHA256 }}
-          WEBHOOK_TOKEN: ${{ env.WEBHOOK_TOKEN }}
+          WEBHOOK_TOKEN: ${{ secrets.WEBHOOK_TOKEN }}
 
       - name: Persist durable reality state
         shell: bash
