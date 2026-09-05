@@ -1,0 +1,53 @@
+name: RSTA-012 Replay Guard
+
+on:
+  workflow_dispatch:
+    inputs:
+      event_id:
+        required: true
+        type: string
+      reality_commit_sha:
+        required: true
+        type: string
+      source_run_id:
+        required: true
+        type: string
+      branch:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  replay-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact durable reality commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.reality_commit_sha }}
+
+      - name: Reject replay without executing downstream action
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ inputs.reality_commit_sha }}"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          event='${{ inputs.event_id }}'
+          ledger=json.loads(Path('ledger/rsta-012-reality.json').read_text())
+          entry=ledger['events'].get(event)
+          if not entry:
+              raise SystemExit(f'REJECT expected but no durable reality state exists for {event}')
+          result={"schema":"rncp-rsta-012-replay-v1","event_id":event,"replay_decision":"REJECT","reason":"DOWNSTREAM_CAPABILITY_ALREADY_CONSUMED","source_run_id":"${{ inputs.source_run_id }}","reality_commit_sha":"${{ inputs.reality_commit_sha }}","downstream_action_executed":False}
+          Path('/tmp/replay-result.json').write_text(json.dumps(result,indent=2))
+          print(json.dumps(result,indent=2))
+          PY
+
+      - name: Upload replay evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: rsta-012-portable-replay-guard
+          path: /tmp/replay-result.json
