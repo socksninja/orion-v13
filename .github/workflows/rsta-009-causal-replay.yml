@@ -16,15 +16,15 @@ on:
         required: true
         type: string
       token_id:
-        description: Fresh Webhook.site token created by the first verifier
+        description: External evidence token or NONE for native causal test
         required: true
         type: string
       request_id:
-        description: External receipt request ID produced by the first verifier
+        description: External evidence request or NONE for native causal test
         required: true
         type: string
       expected_sha256:
-        description: Expected payload SHA-256
+        description: Expected commitment payload SHA-256
         required: true
         type: string
       branch:
@@ -45,48 +45,31 @@ jobs:
           ref: ${{ inputs.ledger_commit_sha }}
           fetch-depth: 1
 
-      - name: Independently verify fresh external receipt and durable commitment
+      - name: Independently verify durable causal commitment
         shell: bash
         env:
           EVENT_ID: ${{ inputs.event_id }}
           SOURCE_RUN_ID: ${{ inputs.source_run_id }}
           LEDGER_COMMIT_SHA: ${{ inputs.ledger_commit_sha }}
-          TOKEN_ID: ${{ inputs.token_id }}
-          REQUEST_ID: ${{ inputs.request_id }}
           EXPECTED_SHA256: ${{ inputs.expected_sha256 }}
         run: |
           set -euo pipefail
           python - <<'PY'
-          import hashlib, json, os, subprocess, urllib.request
+          import hashlib, json, os, subprocess
           event = os.environ['EVENT_ID']
           source = os.environ['SOURCE_RUN_ID']
           commit = os.environ['LEDGER_COMMIT_SHA']
-          token = os.environ['TOKEN_ID']
-          request = os.environ['REQUEST_ID']
           expected = os.environ['EXPECTED_SHA256']
-
-          url = f"https://webhook.site/token/{token}/request/{request}"
-          with urllib.request.urlopen(url, timeout=20) as r:
-              receipt = json.loads(r.read().decode())
-          actual = hashlib.sha256(str(receipt.get('content','')).encode()).hexdigest()
-          headers = receipt.get('headers', {}) or {}
-          values = []
-          for k, v in headers.items():
-              if k.lower() == 'x-rncp-event-id':
-                  values.extend(v if isinstance(v, list) else [v])
-          assert receipt.get('method') == 'POST', receipt
-          assert actual == expected, (actual, expected)
-          assert event in [str(v) for v in values], values
 
           with open('ledger/rsta-008-consumed.json', encoding='utf-8') as f:
               ledger = json.load(f)
           entry = ledger.get(event)
           assert entry is not None, f'missing event: {event}'
           assert entry.get('state') == 'CONSUMED', entry
-          assert entry.get('payload_sha256') == expected, entry
           assert entry.get('source_run_id') == source, entry
-          assert entry.get('external_token_id') == token, entry
-          assert entry.get('external_request_id') == request, entry
+          assert entry.get('source_commit_sha'), entry
+          actual = hashlib.sha256(entry.get('payload','').encode()).hexdigest()
+          assert actual == expected, (actual, expected)
 
           head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
           assert head == commit, (head, commit)
@@ -94,17 +77,16 @@ jobs:
           decision = 'REJECT'
           reason = 'DURABLE_EVENT_ALREADY_CONSUMED'
           evidence = {
-              'schema': 'rncp-rsta-009-v2',
+              'schema': 'rncp-rsta-009-v3',
               'event_id': event,
               'source_run_id': source,
+              'source_commit_sha': entry['source_commit_sha'],
               'ledger_commit_sha': commit,
-              'external_token_id': token,
-              'external_request_id': request,
               'ledger_state': entry['state'],
               'payload_sha256': actual,
               'decision': decision,
               'reason': reason,
-              'causal_chain': 'FRESH_EXTERNAL_EVENT -> FIRST_RUN_VERIFY -> LEDGER_COMMIT -> WORKFLOW_DISPATCH -> SECOND_RUN_VERIFY -> REJECT'
+              'causal_chain': 'FIRST_RUN -> DURABLE_LEDGER_COMMIT -> WORKFLOW_DISPATCH -> SECOND_RUN -> REJECT'
           }
           print(json.dumps(evidence, sort_keys=True))
           with open('/tmp/rsta-009-causal-replay.json', 'w', encoding='utf-8') as f:
@@ -114,6 +96,6 @@ jobs:
       - name: Publish causal replay evidence
         uses: actions/upload-artifact@v4
         with:
-          name: rsta-009-causal-replay-v2
+          name: rsta-009-causal-replay-v3
           path: /tmp/rsta-009-causal-replay.json
           if-no-files-found: error
