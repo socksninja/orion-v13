@@ -32,12 +32,10 @@ jobs:
             const path = 'ledger/rsta-008-consumed.json';
             const branch = context.ref.replace('refs/heads/','');
             const current = await github.rest.repos.getContent({owner:context.repo.owner, repo:context.repo.repo, path, ref:branch});
-            const raw = Buffer.from(current.data.content, 'base64').toString('utf8');
-            const ledger = JSON.parse(raw);
+            const ledger = JSON.parse(Buffer.from(current.data.content,'base64').toString('utf8'));
             if (ledger[eventId]) core.setFailed(`event already exists: ${eventId}`);
-            ledger[eventId] = {state:'CONSUMED',payload,payload_sha256:payloadSha256,source:'GITHUB_ACTIONS_PUBLIC',first_verifier:'GITHUB_ACTIONS_PUBLIC',source_run_id:String(context.runId),source_commit_sha:context.sha};
-            const content = Buffer.from(JSON.stringify(ledger,null,2)+'\n').toString('base64');
-            const updated = await github.rest.repos.createOrUpdateFileContents({owner:context.repo.owner,repo:context.repo.repo,path,message:`RSTA-009: persist causal commitment from run ${context.runId}`,content,sha:current.data.sha,branch});
+            ledger[eventId]={state:'CONSUMED',payload,payload_sha256:payloadSha256,source:'GITHUB_ACTIONS_PUBLIC',first_verifier:'GITHUB_ACTIONS_PUBLIC',source_run_id:String(context.runId),source_commit_sha:context.sha};
+            const updated = await github.rest.repos.createOrUpdateFileContents({owner:context.repo.owner,repo:context.repo.repo,path,message:`RSTA-009: persist causal commitment from run ${context.runId}`,content:Buffer.from(JSON.stringify(ledger,null,2)+'\n').toString('base64'),sha:current.data.sha,branch});
             core.setOutput('event_id',eventId);
             core.setOutput('payload_sha256',payloadSha256);
             core.setOutput('ledger_commit_sha',updated.data.commit.sha);
