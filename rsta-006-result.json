@@ -1,0 +1,12 @@
+{
+  "schema": "rncp-rsta-006-result-v1",
+  "valid": true,
+  "executor": "VERCEL",
+  "external_system": "WEBHOOK_SITE",
+  "verifier": "GITHUB_ACTIONS_PUBLIC",
+  "token_id": "a5a15892-17fd-4ef2-8ed1-64173e863e89",
+  "request_uuid": "a6cccf1e-3cd7-43f0-9679-4c1ca2f45008",
+  "method": "POST",
+  "payload_sha256": "0f803e23a54f71e5861bc5bcc34898fc0aa7dfd96f1c48d67a684fda979115b8",
+  "event_id": "RSTA-005-E001"
+}
