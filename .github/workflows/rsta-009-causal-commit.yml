@@ -12,6 +12,9 @@ permissions:
   contents: write
   actions: write
 
+env:
+  RNCP_STAGE: RSTA-009
+
 jobs:
   causal-commit:
     runs-on: ubuntu-latest
@@ -83,3 +86,4 @@ jobs:
               }
             });
             console.log('workflow_dispatch accepted');
+            // Deterministic zero-cost causal chain: commit state, then explicitly dispatch verifier.
