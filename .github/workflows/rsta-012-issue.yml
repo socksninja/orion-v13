@@ -1,0 +1,92 @@
+name: RSTA-012 Portable Commitment Issuer
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+env:
+  WEBHOOK_TOKEN: a5a15892-17fd-4ef2-8ed1-64173e863e89
+  OBSERVER_URL: https://webhook.site
+
+jobs:
+  issue:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create provider-neutral commitment and publish external evidence
+        id: issue
+        shell: bash
+        run: |
+          set -euo pipefail
+          EVENT_ID="RSTA-012-$(date +%s)-${GITHUB_RUN_ID}"
+          PAYLOAD="RNCP-RSTA-012|run=${GITHUB_RUN_ID}|attempt=${GITHUB_RUN_ATTEMPT}|commit=${GITHUB_SHA}|nonce=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          PAYLOAD_SHA256=$(printf '%s' "$PAYLOAD" | sha256sum | awk '{print $1}')
+          cat > /tmp/commitment.json <<EOF
+          {"protocol":"RNCP-COMMITMENT-V1","event_id":"${EVENT_ID}","issuer":{"provider":"GITHUB_ACTIONS","executor_class":"github-hosted-linux"},"verifier":{"provider":"GITHUB_ACTIONS","executor_class":"github-hosted-linux-independent-run"},"executor":{"provider":"GITHUB_ACTIONS","executor_class":"github-hosted-linux-independent-run"},"reality_observer":{"provider":"WEBHOOK_SITE","executor_class":"external-http-receipt"},"commitment":{"payload":"${PAYLOAD}","payload_sha256":"${PAYLOAD_SHA256}","state":"VALID"},"capability":{"name":"RSTA-012-DEMO-ACTION","single_use":true},"replay_policy":"REJECT_AFTER_CONSUMPTION"}
+          EOF
+          RESPONSE=$(curl -fsS -X POST "${OBSERVER_URL}/${WEBHOOK_TOKEN}" -H "Content-Type: application/json" -H "X-RNCP-Event-ID: ${EVENT_ID}" -H "X-RNCP-Role: issuer" --data-binary @/tmp/commitment.json)
+          echo "$RESPONSE" > /tmp/observer-post-response.txt
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path('/tmp/commitment.json').read_text())
+          print(json.dumps({"event_id":p["event_id"],"payload_sha256":p["commitment"]["payload_sha256"],"protocol":p["protocol"]}, indent=2))
+          PY
+          echo "EVENT_ID=${EVENT_ID}" >> "$GITHUB_OUTPUT"
+          echo "PAYLOAD_SHA256=${PAYLOAD_SHA256}" >> "$GITHUB_OUTPUT"
+          echo "PAYLOAD<<EOF" >> "$GITHUB_OUTPUT"; printf '%s\n' "$PAYLOAD" >> "$GITHUB_OUTPUT"; echo "EOF" >> "$GITHUB_OUTPUT"
+          cp /tmp/commitment.json rsta-012-commitment.json
+
+      - name: Persist issued commitment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_ID: ${{ steps.issue.outputs.EVENT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ledger
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          src=json.loads(Path('rsta-012-commitment.json').read_text())
+          path=Path('ledger/rsta-012-issued.json')
+          if path.exists(): ledger=json.loads(path.read_text())
+          else: ledger={"schema":"rncp-rsta-012-issued-v1","events":{}}
+          ledger["events"][src["event_id"]]={**src,"issued_by_run":src["commitment"]["payload"].split('|')[1].split('=')[1]}
+          path.write_text(json.dumps(ledger,indent=2)+"\n")
+          PY
+          git config user.name "rncp-bot"
+          git config user.email "rncp-bot@users.noreply.github.com"
+          git add ledger/rsta-012-issued.json rsta-012-commitment.json
+          git commit -m "RSTA-012: persist provider-neutral commitment ${EVENT_ID}"
+          git push
+          echo "LEDGER_COMMIT_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Dispatch independent verifier
+        uses: actions/github-script@v7
+        env:
+          EVENT_ID: ${{ steps.issue.outputs.EVENT_ID }}
+          PAYLOAD_SHA256: ${{ steps.issue.outputs.PAYLOAD_SHA256 }}
+          LEDGER_COMMIT_SHA: ${{ env.LEDGER_COMMIT_SHA }}
+          SOURCE_RUN_ID: ${{ github.run_id }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'rsta-012-verify.yml',
+              ref: 'main',
+              inputs: {
+                event_id: process.env.EVENT_ID,
+                payload_sha256: process.env.PAYLOAD_SHA256,
+                ledger_commit_sha: process.env.LEDGER_COMMIT_SHA,
+                source_run_id: process.env.SOURCE_RUN_ID,
+                branch: 'main'
+              }
+            });
+            console.log('RSTA-012 verifier dispatch accepted');
