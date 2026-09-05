@@ -1,0 +1,52 @@
+name: RSTA-008 Consume Commitment
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/rsta-008-consume.yml
+      - ledger/rsta-008-consumed.json
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  consume:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Independently verify external receipt
+        shell: bash
+        env:
+          TOKEN_ID: a5a15892-17fd-4ef2-8ed1-64173e863e89
+          REQUEST_UUID: a6cccf1e-3cd7-43f0-9679-4c1ca2f45008
+          EXPECTED_SHA256: 0f803e23a54f71e5861bc5bcc34898fc0aa7dfd96f1c48d67a684fda979115b8
+          EVENT_ID: RSTA-005-E001
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, json, os, urllib.request
+          url=f"https://webhook.site/token/{os.environ['TOKEN_ID']}/request/{os.environ['REQUEST_UUID']}"
+          with urllib.request.urlopen(url, timeout=20) as r:
+              data=json.loads(r.read().decode())
+          actual=hashlib.sha256(str(data.get('content','')).encode()).hexdigest()
+          headers=data.get('headers',{}) or {}
+          values=[]
+          for k,v in headers.items():
+              if k.lower()=='x-rncp-event-id': values=v if isinstance(v,list) else [v]
+          assert data.get('method')=='POST'
+          assert actual==os.environ['EXPECTED_SHA256']
+          assert os.environ['EVENT_ID'] in values
+          print(json.dumps({'event_id':os.environ['EVENT_ID'],'payload_sha256':actual,'verification':'PASS'}))
+          PY
+      - name: Persist consumption as GitHub PR ledger comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          gh api --method POST \
+            -H 'Accept: application/vnd.github+json' \
+            "/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+            -f body='RNCP-COMMITMENT-LEDGER v1 | event_id=RSTA-005-E001 | state=CONSUMED | payload_sha256=0f803e23a54f71e5861bc5bcc34898fc0aa7dfd96f1c48d67a684fda979115b8 | writer=RSTA-008-consume-run:${GITHUB_RUN_ID}'
