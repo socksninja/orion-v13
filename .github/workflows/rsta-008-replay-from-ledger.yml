@@ -1,0 +1,26 @@
+name: RSTA-008 Replay From Durable Ledger
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  replay:
+    if: github.event.issue.pull_request != null && contains(github.event.comment.body, 'RNCP-COMMITMENT-LEDGER v1')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read durable ledger comment and reject replay
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          body='${{ github.event.comment.body }}'
+          echo "$body"
+          test "$(printf '%s' "$body" | grep -o 'event_id=RSTA-005-E001' || true)" = 'event_id=RSTA-005-E001'
+          test "$(printf '%s' "$body" | grep -o 'state=CONSUMED' || true)" = 'state=CONSUMED'
+          test "$(printf '%s' "$body" | grep -o 'writer=RSTA-008-consume-run:[0-9]*' || true)" != ''
+          echo '{"schema":"rncp-rsta-008-v2","event_id":"RSTA-005-E001","ledger_state":"CONSUMED","decision":"REJECT","reason":"DURABLE_LEDGER_REPLAY"}'

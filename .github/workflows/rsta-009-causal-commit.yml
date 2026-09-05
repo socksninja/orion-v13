@@ -1,0 +1,131 @@
+name: RSTA-009 Causal Commit
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/rsta-009-causal-commit.yml
+      - ledger/rsta-008-consumed.json
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  causal-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create fresh external evidence container
+        id: external
+        shell: bash
+        run: |
+          set -euo pipefail
+          token_json=$(curl -fsS -X POST https://webhook.site/token -H 'Accept: application/json')
+          token_id=$(python -c 'import json,sys; print(json.loads(sys.argv[1])["uuid"])' "$token_json")
+          payload="RNCP-RSTA-009|run=${GITHUB_RUN_ID}|nonce=${GITHUB_RUN_ATTEMPT}"
+          response=$(curl -fsS -X POST "https://webhook.site/${token_id}" \
+            -H 'Content-Type: text/plain' \
+            -H 'X-RNCP-Event-ID: RSTA-009-E001' \
+            --data "$payload")
+          echo "external_ack=$response"
+          requests=$(curl -fsS "https://webhook.site/token/${token_id}/requests?sorting=newest&per_page=1")
+          request_id=$(python -c 'import json,sys; print(json.loads(sys.argv[1])["data"][0]["uuid"])' "$requests")
+          actual_sha=$(python -c 'import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest())' "$payload")
+          echo "token_id=$token_id" >> "$GITHUB_OUTPUT"
+          echo "request_id=$request_id" >> "$GITHUB_OUTPUT"
+          echo "payload_sha256=$actual_sha" >> "$GITHUB_OUTPUT"
+          echo "payload=$payload" >> "$GITHUB_OUTPUT"
+
+      - name: Independently verify fresh external receipt
+        env:
+          TOKEN_ID: ${{ steps.external.outputs.token_id }}
+          REQUEST_ID: ${{ steps.external.outputs.request_id }}
+          EXPECTED_SHA256: ${{ steps.external.outputs.payload_sha256 }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, json, os, urllib.request
+          url=f"https://webhook.site/token/{os.environ['TOKEN_ID']}/request/{os.environ['REQUEST_ID']}"
+          with urllib.request.urlopen(url, timeout=20) as r:
+              data=json.loads(r.read().decode())
+          actual=hashlib.sha256(str(data.get('content','')).encode()).hexdigest()
+          headers=data.get('headers',{}) or {}
+          values=[]
+          for k,v in headers.items():
+              if k.lower() == 'x-rncp-event-id':
+                  values.extend(v if isinstance(v,list) else [v])
+          assert data.get('method') == 'POST', data
+          assert actual == os.environ['EXPECTED_SHA256'], (actual, os.environ['EXPECTED_SHA256'])
+          assert 'RSTA-009-E001' in [str(x) for x in values], values
+          print(json.dumps({'receipt_verification':'PASS','payload_sha256':actual,'token_id':os.environ['TOKEN_ID'],'request_id':os.environ['REQUEST_ID']}))
+          PY
+
+      - name: Persist CONSUMED state produced by this run
+        id: persist
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_ID: RSTA-009-E001
+          PAYLOAD_SHA256: ${{ steps.external.outputs.payload_sha256 }}
+          SOURCE_RUN_ID: ${{ github.run_id }}
+          TOKEN_ID: ${{ steps.external.outputs.token_id }}
+          REQUEST_ID: ${{ steps.external.outputs.request_id }}
+          BRANCH: rncp-public-run
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp)
+          gh api "/repos/${GITHUB_REPOSITORY}/contents/ledger/rsta-008-consumed.json?ref=${BRANCH}" > "$tmp"
+          sha=$(python - <<'PY' "$tmp"
+          import json,sys
+          print(json.load(open(sys.argv[1]))['sha'])
+          PY
+          )
+          content=$(python - <<'PY' "$tmp" "$EVENT_ID" "$PAYLOAD_SHA256" "$SOURCE_RUN_ID" "$TOKEN_ID" "$REQUEST_ID"
+          import base64,json,sys
+          raw=base64.b64decode(json.load(open(sys.argv[1]))['content']).decode()
+          ledger=json.loads(raw)
+          ledger[sys.argv[2]]={
+              'state':'CONSUMED',
+              'payload_sha256':sys.argv[3],
+              'source':'GITHUB_ACTIONS_PUBLIC->WEBHOOK_SITE',
+              'first_verifier':'GITHUB_ACTIONS_PUBLIC',
+              'source_run_id':sys.argv[4],
+              'external_token_id':sys.argv[5],
+              'external_request_id':sys.argv[6]
+          }
+          text=json.dumps(ledger,indent=2,sort_keys=True)+'\n'
+          print(base64.b64encode(text.encode()).decode())
+          PY
+          )
+          response=$(gh api --method PUT \
+            -H 'Accept: application/vnd.github+json' \
+            "/repos/${GITHUB_REPOSITORY}/contents/ledger/rsta-008-consumed.json" \
+            -f message="RSTA-009: persist causal CONSUMED state from run ${SOURCE_RUN_ID}" \
+            -f content="$content" \
+            -f sha="$sha" \
+            -f branch="$BRANCH")
+          ledger_commit_sha=$(python -c 'import json,sys; print(json.loads(sys.argv[1])["commit"]["sha"])' "$response")
+          echo "ledger_commit_sha=$ledger_commit_sha" >> "$GITHUB_OUTPUT"
+          echo "ledger_commit_sha=$ledger_commit_sha"
+
+      - name: Dispatch independent second executor from this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LEDGER_COMMIT_SHA: ${{ steps.persist.outputs.ledger_commit_sha }}
+          SOURCE_RUN_ID: ${{ github.run_id }}
+          TOKEN_ID: ${{ steps.external.outputs.token_id }}
+          REQUEST_ID: ${{ steps.external.outputs.request_id }}
+          EXPECTED_SHA256: ${{ steps.external.outputs.payload_sha256 }}
+        run: |
+          set -euo pipefail
+          gh workflow run rsta-009-causal-replay.yml \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref rncp-public-run \
+            -f event_id=RSTA-009-E001 \
+            -f source_run_id="${SOURCE_RUN_ID}" \
+            -f ledger_commit_sha="${LEDGER_COMMIT_SHA}" \
+            -f token_id="${TOKEN_ID}" \
+            -f request_id="${REQUEST_ID}" \
+            -f expected_sha256="${EXPECTED_SHA256}" \
+            -f branch=rncp-public-run
+          echo 'workflow_dispatch accepted'

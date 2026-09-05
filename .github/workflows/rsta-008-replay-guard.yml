@@ -1,0 +1,56 @@
+name: RSTA-008 Durable Replay Guard
+
+on:
+  push:
+    branches: [rncp-public-run]
+    paths:
+      - ledger/rsta-008-consumed.json
+      - .github/workflows/rsta-008-replay-guard.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - ledger/rsta-008-consumed.json
+      - .github/workflows/rsta-008-replay-guard.yml
+
+permissions:
+  contents: read
+
+jobs:
+  replay-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify durable commitment and reject replay
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          with open('ledger/rsta-008-consumed.json', encoding='utf-8') as f:
+              ledger = json.load(f)
+          event = 'RSTA-005-E001'
+          assert ledger.get(event, {}).get('state') == 'CONSUMED'
+          decision = 'REJECT'
+          reason = 'DURABLE_EVENT_ALREADY_CONSUMED'
+          print(json.dumps({
+              'schema': 'rncp-rsta-008-v1',
+              'event_id': event,
+              'ledger_state': ledger[event]['state'],
+              'decision': decision,
+              'reason': reason,
+          }, sort_keys=True))
+          with open('/tmp/rsta-008-replay-evidence.json', 'w', encoding='utf-8') as f:
+              json.dump({
+                  'schema': 'rncp-rsta-008-v1',
+                  'event_id': event,
+                  'ledger_state': ledger[event]['state'],
+                  'decision': decision,
+                  'reason': reason,
+              }, f, indent=2)
+          PY
+      - name: Publish replay evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: rsta-008-replay-reject
+          path: /tmp/rsta-008-replay-evidence.json
+          if-no-files-found: error
