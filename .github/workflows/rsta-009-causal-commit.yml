@@ -81,11 +81,7 @@ jobs:
             -f content="$content" \
             -f sha="$sha" \
             -f branch="$BRANCH")
-          ledger_commit_sha=$(python - <<'PY' "$response"
-          import json,sys
-          print(json.load(sys.stdin if False else open('/dev/null','r')) if False else json.loads(sys.argv[1])['commit']['sha'])
-          PY
-          )
+          ledger_commit_sha=$(python -c 'import json,sys; print(json.loads(sys.argv[1])["commit"]["sha"])' "$response")
           echo "ledger_commit_sha=$ledger_commit_sha" >> "$GITHUB_OUTPUT"
           echo "ledger_commit_sha=$ledger_commit_sha"
 
