@@ -1,0 +1,20 @@
+{
+  "schema": "rncp-rsta-014-portable-envelope-v1",
+  "protocol": "RNCP-COMMITMENT-V1",
+  "event_id": "RSTA-014-E2E-001",
+  "commitment": {
+    "payload": "amount=100|currency=USD|action=release|nonce=RSTA-014-001",
+    "payload_sha256": "c2b0e9ce6a8f3b2fb7f9df9ef0a29b36d82c3d3f0bb1d0f0d55e5b4c9fb1d6d4",
+    "state": "VALID"
+  },
+  "capability": {
+    "name": "RSTA-014-PORTABLE-ACTION",
+    "single_use": true
+  },
+  "execution_intent": {
+    "action": "materialize-reality-receipt",
+    "target": "portable-rncp-harness",
+    "idempotency_key": "RSTA-014-E2E-001"
+  },
+  "replay_policy": "REJECT_AFTER_CONSUMPTION"
+}
