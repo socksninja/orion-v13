@@ -4,7 +4,7 @@
   "event_id": "RSTA-014-E2E-001",
   "commitment": {
     "payload": "amount=100|currency=USD|action=release|nonce=RSTA-014-001",
-    "payload_sha256": "c2b0e9ce6a8f3b2fb7f9df9ef0a29b36d82c3d3f0bb1d0f0d55e5b4c9fb1d6d4",
+    "payload_sha256": "db805b0226c1c25b27d6e1832fd8d53a4f0ebdc20c55340a91d8bdca9da59b2d",
     "state": "VALID"
   },
   "capability": {
